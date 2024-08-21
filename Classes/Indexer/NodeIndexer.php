@@ -47,6 +47,12 @@ class NodeIndexer extends ContentRepositoryAdaptor\Indexer\NodeIndexer
      */
     protected $enableLiveAsyncIndexing;
 
+    /**
+     * @Flow\InjectConfiguration(path="batchSize")
+     * @var int
+     */
+    protected $queueBatchSize;
+
     protected array $nodesToIndex = [];
     protected array $nodesToRemove = [];
 
@@ -77,7 +83,7 @@ class NodeIndexer extends ContentRepositoryAdaptor\Indexer\NodeIndexer
             }
         }
 
-        $this->nodesToIndex[$targetWorkspaceName][] = $this->nodeAsArray($node)[0];
+        $this->nodesToIndex[$targetWorkspaceName??$node->getContext()->getWorkspaceName()][$node->getIdentifier()] = $this->nodeAsArray($node)[0];
         $this->flushIfNeeded();
     }
 
@@ -93,7 +99,6 @@ class NodeIndexer extends ContentRepositoryAdaptor\Indexer\NodeIndexer
     {
         if ($this->enableLiveAsyncIndexing !== true) {
             parent::removeNode($node, $targetWorkspaceName);
-
             return;
         }
 
@@ -107,46 +112,58 @@ class NodeIndexer extends ContentRepositoryAdaptor\Indexer\NodeIndexer
             }
         }
 
-        $this->nodesToRemove[$targetWorkspaceName][] = $this->nodeAsArray($node)[0];
+        $this->nodesToRemove[$targetWorkspaceName??$node->getContext()->getWorkspaceName()][$node->getIdentifier()] = $this->nodeAsArray($node)[0];
         $this->flushIfNeeded();
     }
 
     protected function nodesToIndexLength(): int
     {
-        return array_reduce($this->nodesToIndex, function ($carry, $nodes) {
-            return $carry + sizeof($nodes);
-        }, 0);
+        return array_reduce(
+            $this->nodesToIndex,
+            function ($carry, $nodes) {
+                return $carry + sizeof($nodes);
+            },
+            0
+        );
     }
 
     protected function nodesToRemoveLength(): int
     {
-        return array_reduce($this->nodesToRemove, function ($carry, $nodes) {
-            return $carry + sizeof($nodes);
-        }, 0);
+        return array_reduce(
+            $this->nodesToRemove,
+            function ($carry, $nodes) {
+                return $carry + sizeof($nodes);
+            },
+            0
+        );
     }
 
     protected function bulkRequestLength(): int
     {
-        return parent::bulkRequestLength() + $this->nodesToRemoveLength() + $this->nodesToIndexLength();
+        return $this->nodesToRemoveLength() + $this->nodesToIndexLength();
     }
 
-    protected function bulkRequestSize(): int
+    protected function flushIfNeeded(): void
     {
-        return parent::bulkRequestSize() + $this->nodesToRemoveLength() + $this->nodesToIndexLength();
+        if ($this->bulkRequestLength() >= $this->queueBatchSize) {
+            $this->flush();
+        }
+        if ($this->bulkRequestLength() >= $this->batchSize['elements'] || $this->bulkRequestSize() >= $this->batchSize['octets']) {
+            parent::flush();
+        }
     }
 
     public function flush(): void
     {
         foreach ($this->nodesToIndex as $targetWorkspaceName => $nodesToIndex) {
-            $indexingJob = new IndexingJob($this->indexNamePostfix, $targetWorkspaceName, $nodesToIndex);
+            $indexingJob = new IndexingJob($this->indexNamePostfix, $targetWorkspaceName, array_values($nodesToIndex));
             $this->jobManager->queue(NodeIndexQueueCommandController::LIVE_QUEUE_NAME, $indexingJob);
         }
 
         foreach ($this->nodesToRemove as $targetWorkspaceName => $nodesToRemove) {
-            $removalJob = new RemovalJob($this->indexNamePostfix, $targetWorkspaceName, $nodesToRemove);
+            $removalJob = new RemovalJob($this->indexNamePostfix, $targetWorkspaceName, array_values($nodesToRemove));
             $this->jobManager->queue(NodeIndexQueueCommandController::LIVE_QUEUE_NAME, $removalJob);
         }
-
         parent::flush();
     }
 
