@@ -47,6 +47,9 @@ class NodeIndexer extends ContentRepositoryAdaptor\Indexer\NodeIndexer
      */
     protected $enableLiveAsyncIndexing;
 
+    protected array $nodesToIndex = [];
+    protected array $nodesToRemove = [];
+
     /**
      * @param NodeInterface $node
      * @param string|null $targetWorkspaceName In case indexing is triggered during publishing, a target workspace name will be passed in
@@ -54,7 +57,7 @@ class NodeIndexer extends ContentRepositoryAdaptor\Indexer\NodeIndexer
      */
     public function indexNode(NodeInterface $node, $targetWorkspaceName = null): void
     {
-        if( $node->isRemoved() ){
+        if ($node->isRemoved()) {
             $this->removeNode($node, $targetWorkspaceName);
             return;
         }
@@ -74,8 +77,8 @@ class NodeIndexer extends ContentRepositoryAdaptor\Indexer\NodeIndexer
             }
         }
 
-        $indexingJob = new IndexingJob($this->indexNamePostfix, $targetWorkspaceName, $this->nodeAsArray($node));
-        $this->jobManager->queue(NodeIndexQueueCommandController::LIVE_QUEUE_NAME, $indexingJob);
+        $this->nodesToIndex[$targetWorkspaceName][] = $this->nodeAsArray($node)[0];
+        $this->flushIfNeeded();
     }
 
     /**
@@ -104,8 +107,54 @@ class NodeIndexer extends ContentRepositoryAdaptor\Indexer\NodeIndexer
             }
         }
 
-        $removalJob = new RemovalJob($this->indexNamePostfix, $targetWorkspaceName, $this->nodeAsArray($node));
-        $this->jobManager->queue(NodeIndexQueueCommandController::LIVE_QUEUE_NAME, $removalJob);
+        $this->nodesToRemove[$targetWorkspaceName][] = $this->nodeAsArray($node)[0];
+        $this->flushIfNeeded();
+    }
+
+    protected function nodesToIndexLength(): int
+    {
+        return array_reduce($this->nodesToIndex, function ($carry, $nodes) {
+            return $carry + sizeof($nodes);
+        }, 0);
+    }
+
+    protected function nodesToRemoveLength(): int
+    {
+        return array_reduce($this->nodesToRemove, function ($carry, $nodes) {
+            return $carry + sizeof($nodes);
+        }, 0);
+    }
+
+    protected function bulkRequestLength(): int
+    {
+        return parent::bulkRequestLength() + $this->nodesToRemoveLength() + $this->nodesToIndexLength();
+    }
+
+    protected function bulkRequestSize(): int
+    {
+        return parent::bulkRequestSize() + $this->nodesToRemoveLength() + $this->nodesToIndexLength();
+    }
+
+    public function flush(): void
+    {
+        foreach ($this->nodesToIndex as $targetWorkspaceName => $nodesToIndex) {
+            $indexingJob = new IndexingJob($this->indexNamePostfix, $targetWorkspaceName, $nodesToIndex);
+            $this->jobManager->queue(NodeIndexQueueCommandController::LIVE_QUEUE_NAME, $indexingJob);
+        }
+
+        foreach ($this->nodesToRemove as $targetWorkspaceName => $nodesToRemove) {
+            $removalJob = new RemovalJob($this->indexNamePostfix, $targetWorkspaceName, $nodesToRemove);
+            $this->jobManager->queue(NodeIndexQueueCommandController::LIVE_QUEUE_NAME, $removalJob);
+        }
+
+        parent::flush();
+    }
+
+    protected function reset(): void
+    {
+        $this->nodesToIndex = [];
+        $this->nodesToRemove = [];
+        parent::reset();
     }
 
     /**
