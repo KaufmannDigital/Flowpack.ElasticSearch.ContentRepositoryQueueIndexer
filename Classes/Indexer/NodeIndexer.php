@@ -148,9 +148,6 @@ class NodeIndexer extends ContentRepositoryAdaptor\Indexer\NodeIndexer
         if ($this->bulkRequestLength() >= $this->queueBatchSize) {
             $this->flush();
         }
-        if ($this->bulkRequestLength() >= $this->batchSize['elements'] || $this->bulkRequestSize() >= $this->batchSize['octets']) {
-            parent::flush();
-        }
     }
 
     public function flush(): void
@@ -164,14 +161,14 @@ class NodeIndexer extends ContentRepositoryAdaptor\Indexer\NodeIndexer
             $removalJob = new RemovalJob($this->indexNamePostfix, $targetWorkspaceName, array_values($nodesToRemove));
             $this->jobManager->queue(NodeIndexQueueCommandController::LIVE_QUEUE_NAME, $removalJob);
         }
-        parent::flush();
+
+        $this->reset();
     }
 
     protected function reset(): void
     {
         $this->nodesToIndex = [];
         $this->nodesToRemove = [];
-        parent::reset();
     }
 
     /**
